@@ -25,7 +25,7 @@ load_env_file() {
 load_env_file
 
 # Unset HTTP proxies that might be set by Docker daemon
-export http_proxy=""; export https_proxy=""; export no_proxy=""; export HTTP_PROXY=""; export HTTPS_PROXY=""; export NO_PROXY=""
+# export http_proxy=""; export https_proxy=""; export no_proxy=""; export HTTP_PROXY=""; export HTTPS_PROXY=""; export NO_PROXY=""
 export PYTHONPATH=$(pwd)
 
 export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/
