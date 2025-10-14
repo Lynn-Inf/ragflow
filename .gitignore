@@ -150,7 +150,7 @@ out
 .nuxt
 dist
 admin/release
-
+ragflow_cli.egg-info
 # Gatsby files
 .cache/
 # Comment in the public line in if your project uses Gatsby and not Next.js
