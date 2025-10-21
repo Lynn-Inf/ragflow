@@ -1,7 +1,25 @@
-from prometheus_client import Counter, Histogram
-from flask import request
+#
+#  Copyright 2024 The InfiniFlow Authors. All Rights Reserved.
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+#
 import time
 import functools
+
+from prometheus_client import Counter, Histogram
+from flask import request
+
+from api.utils.api_utils import error_response
 
 # define metrics
 REQUEST_COUNT = Counter(
@@ -77,6 +95,7 @@ def monitor_requests(endpoint=None):
                 return response
 
             except Exception as e:
+                error_code = '500' if not status_code else status_code
                 # record exception
                 error_type = type(e).__name__
                 REQUEST_FAILURES.labels(
@@ -87,11 +106,10 @@ def monitor_requests(endpoint=None):
                 REQUEST_COUNT.labels(
                     method=method,
                     endpoint=actual_endpoint,
-                    status_code='500' if not status_code else status_code
+                    status_code=error_code
                 ).inc()
 
-                # reraise
-                raise e
+                return error_response(error_code, str(e))
 
         return wrapped
 
