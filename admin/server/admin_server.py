@@ -23,6 +23,7 @@ import traceback
 from werkzeug.serving import run_simple
 from flask import Flask
 from routes import admin_bp
+from monitor_api import monitor_bp
 from api.utils.log_utils import init_root_logger
 from api.constants import SERVICE_CONF
 from api import settings
@@ -45,6 +46,7 @@ if __name__ == '__main__':
 
     app = Flask(__name__)
     app.register_blueprint(admin_bp)
+    app.register_blueprint(monitor_bp)
     app.config["SESSION_PERMANENT"] = False
     app.config["SESSION_TYPE"] = "filesystem"
     app.config["MAX_CONTENT_LENGTH"] = int(

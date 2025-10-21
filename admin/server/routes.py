@@ -24,11 +24,13 @@ from responses import success_response, error_response
 from services import UserMgr, ServiceMgr, UserServiceMgr
 from roles import RoleMgr
 from api.common.exceptions import AdminException
+from monitor.prometheus_monitor import monitor_requests
 
 admin_bp = Blueprint('admin', __name__, url_prefix='/api/v1/admin')
 
 
 @admin_bp.route('/login', methods=['POST'])
+@monitor_requests('/api/v1/admin/login')
 def login():
     if not request.json:
         return error_response('Authorize admin failed.' ,400)

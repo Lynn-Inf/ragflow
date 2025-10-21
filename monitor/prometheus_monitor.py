@@ -1,9 +1,7 @@
-from prometheus_client import Counter, Histogram, generate_latest, REGISTRY
-from flask import Flask, Response, request
+from prometheus_client import Counter, Histogram
+from flask import request
 import time
 import functools
-
-app = Flask(__name__)
 
 # define metrics
 REQUEST_COUNT = Counter(
