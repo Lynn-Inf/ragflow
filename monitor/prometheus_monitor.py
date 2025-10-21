@@ -40,7 +40,7 @@ def monitor_requests(endpoint=None):
             actual_endpoint = endpoint or request.path
             method = request.method
             start_time = time.time()
-
+            status_code = None
             try:
                 response = f(*args, **kwargs)
 
@@ -84,15 +84,14 @@ def monitor_requests(endpoint=None):
                     endpoint=actual_endpoint,
                     error_type=error_type
                 ).inc()
-
                 REQUEST_COUNT.labels(
                     method=method,
                     endpoint=actual_endpoint,
-                    status_code='500'
+                    status_code='500' if not status_code else status_code
                 ).inc()
 
                 # reraise
-                raise
+                raise e
 
         return wrapped
 
