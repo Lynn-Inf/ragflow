@@ -15,12 +15,11 @@
 #
 
 import logging
-import os
 import re
+import os
 from functools import reduce
 from io import BytesIO
 from timeit import default_timer as timer
-
 from docx import Document
 from docx.image.exceptions import InvalidImageStreamError, UnexpectedEndOfFileError, UnrecognizedImageError
 from docx.opc.pkgreader import _SerializedRelationships, _SerializedRelationship
@@ -31,10 +30,11 @@ from tika import parser
 
 from api.db import LLMType
 from api.db.services.llm_service import LLMBundle
+from api.utils.file_utils import extract_embed_file
 from deepdoc.parser import DocxParser, ExcelParser, HtmlParser, JsonParser, MarkdownElementExtractor, MarkdownParser, PdfParser, TxtParser
-from deepdoc.parser.figure_parser import VisionFigureParser, vision_figure_parser_figure_data_wrapper
-from deepdoc.parser.mineru_parser import MinerUParser
+from deepdoc.parser.figure_parser import VisionFigureParser,vision_figure_parser_docx_wrapper,vision_figure_parser_pdf_wrapper
 from deepdoc.parser.pdf_parser import PlainParser, VisionParser
+from deepdoc.parser.mineru_parser import MinerUParser
 from rag.nlp import concat_img, find_codec, naive_merge, naive_merge_with_images, naive_merge_docx, rag_tokenizer, tokenize_chunks, tokenize_chunks_with_images, tokenize_table
 
 
@@ -437,6 +437,7 @@ def chunk(filename, binary=None, from_page=0, to_page=100000,
         Successive text will be sliced into pieces using 'delimiter'.
         Next, these successive pieces are merge into chunks whose token number is no more than 'Max token number'.
     """
+    
 
     is_english = lang.lower() == "english"  # is_english(cks)
     parser_config = kwargs.get(
@@ -450,27 +451,37 @@ def chunk(filename, binary=None, from_page=0, to_page=100000,
     res = []
     pdf_parser = None
     section_images = None
+
+    is_root = kwargs.get("is_root", True)
+    embed_res = []
+    if is_root:
+        # Only extract embedded files at the root call
+        embeds = []
+        if binary is not None:
+            embeds = extract_embed_file(binary)
+        else:
+            raise Exception("Embedding extraction from file path is not supported.")
+        
+        # Recursively chunk each embedded file and collect results
+        for embed_filename, embed_bytes in embeds:
+            try:
+                sub_res = chunk(embed_filename, binary=embed_bytes, lang=lang, callback=callback, is_root=False, **kwargs) or []
+                embed_res.extend(sub_res)
+            except Exception as e:
+                if callback:
+                    callback(0.05, f"Failed to chunk embed {embed_filename}: {e}")
+                continue
+
     if re.search(r"\.docx$", filename, re.IGNORECASE):
         callback(0.1, "Start to parse.")
 
-        try:
-            vision_model = LLMBundle(kwargs["tenant_id"], LLMType.IMAGE2TEXT)
-            callback(0.15, "Visual model detected. Attempting to enhance figure extraction...")
-        except Exception:
-            vision_model = None
+        
 
         # fix "There is no item named 'word/NULL' in the archive", referring to https://github.com/python-openxml/python-docx/issues/1105#issuecomment-1298075246
         _SerializedRelationships.load_from_xml = load_from_xml_v2
         sections, tables = Docx()(filename, binary)
 
-        if vision_model:
-            figures_data = vision_figure_parser_figure_data_wrapper(sections)
-            try:
-                docx_vision_parser = VisionFigureParser(vision_model=vision_model, figures_data=figures_data, **kwargs)
-                boosted_figures = docx_vision_parser(callback=callback)
-                tables.extend(boosted_figures)
-            except Exception as e:
-                callback(0.6, f"Visual model error: {e}. Skipping figure parsing enhancement.")
+        tables=vision_figure_parser_docx_wrapper(sections=sections,tbls=tables,callback=callback,**kwargs)
 
         res = tokenize_table(tables, doc, is_english)
         callback(0.8, "Finish parsing.")
@@ -483,10 +494,12 @@ def chunk(filename, binary=None, from_page=0, to_page=100000,
                 "delimiter", "\n!?。；！？"))
 
         if kwargs.get("section_only", False):
+            chunks.extend(embed_res)
             return chunks
 
         res.extend(tokenize_chunks_with_images(chunks, doc, is_english, images))
         logging.info("naive_merge({}): {}".format(filename, timer() - st))
+        res.extend(embed_res)
         return res
 
     elif re.search(r"\.pdf$", filename, re.IGNORECASE):
@@ -497,28 +510,12 @@ def chunk(filename, binary=None, from_page=0, to_page=100000,
 
         if layout_recognizer == "DeepDOC":
             pdf_parser = Pdf()
-
-            try:
-                vision_model = LLMBundle(kwargs["tenant_id"], LLMType.IMAGE2TEXT)
-                callback(0.15, "Visual model detected. Attempting to enhance figure extraction...")
-            except Exception:
-                vision_model = None
-
-            if vision_model:
-                sections, tables, figures = pdf_parser(filename if not binary else binary, from_page=from_page, to_page=to_page, callback=callback, separate_tables_figures=True)
-                callback(0.5, "Basic parsing complete. Proceeding with figure enhancement...")
-                try:
-                    pdf_vision_parser = VisionFigureParser(vision_model=vision_model, figures_data=figures, **kwargs)
-                    boosted_figures = pdf_vision_parser(callback=callback)
-                    tables.extend(boosted_figures)
-                except Exception as e:
-                    callback(0.6, f"Visual model error: {e}. Skipping figure parsing enhancement.")
-                    tables.extend(figures)
-            else:
-                sections, tables = pdf_parser(filename if not binary else binary, from_page=from_page, to_page=to_page, callback=callback)
+            sections, tables = pdf_parser(filename if not binary else binary, from_page=from_page, to_page=to_page, callback=callback)
+            tables=vision_figure_parser_pdf_wrapper(tbls=tables,callback=callback,**kwargs)
 
             res = tokenize_table(tables, doc, is_english)
             callback(0.8, "Finish parsing.")
+
         elif layout_recognizer == "MinerU":
             mineru_executable = os.environ.get("MINERU_EXECUTABLE", "mineru")
             pdf_parser = MinerUParser(mineru_path=mineru_executable)
@@ -621,7 +618,6 @@ def chunk(filename, binary=None, from_page=0, to_page=100000,
             callback(0.8, f"tika.parser got empty content from {filename}.")
             logging.warning(f"tika.parser got empty content from {filename}.")
             return []
-
     else:
         raise NotImplementedError(
             "file type not supported yet(pdf, xlsx, doc, docx, txt supported)")
@@ -638,6 +634,7 @@ def chunk(filename, binary=None, from_page=0, to_page=100000,
                                             "chunk_token_num", 128)), parser_config.get(
                                             "delimiter", "\n!?。；！？"))
         if kwargs.get("section_only", False):
+            chunks.extend(embed_res)
             return chunks
 
         res.extend(tokenize_chunks_with_images(chunks, doc, is_english, images))
@@ -647,11 +644,14 @@ def chunk(filename, binary=None, from_page=0, to_page=100000,
                 "chunk_token_num", 128)), parser_config.get(
                 "delimiter", "\n!?。；！？"))
         if kwargs.get("section_only", False):
+            chunks.extend(embed_res)
             return chunks
 
         res.extend(tokenize_chunks(chunks, doc, is_english, pdf_parser))
 
     logging.info("naive_merge({}): {}".format(filename, timer() - st))
+    if embed_res:
+        res.extend(embed_res)
     return res
 
 
