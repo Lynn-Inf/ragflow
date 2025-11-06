@@ -622,7 +622,9 @@ class AdminCLI(Cmd):
         response = self.session.get(url)
         res_json = response.json()
         if response.status_code == 200:
-            self._print_table_simple(res_json['data'])
+            table_data = res_json['data']
+            table_data.pop('avatar')
+            self._print_table_simple(table_data)
         else:
             print(f"Fail to get user {user_name}, code: {res_json['code']}, message: {res_json['message']}")
 
@@ -695,7 +697,10 @@ class AdminCLI(Cmd):
         response = self.session.get(url)
         res_json = response.json()
         if response.status_code == 200:
-            self._print_table_simple(res_json['data'])
+            table_data = res_json['data']
+            for t in table_data:
+                t.pop('avatar')
+            self._print_table_simple(table_data)
         else:
             print(f"Fail to get all datasets of {user_name}, code: {res_json['code']}, message: {res_json['message']}")
 
@@ -707,7 +712,10 @@ class AdminCLI(Cmd):
         response = self.session.get(url)
         res_json = response.json()
         if response.status_code == 200:
-            self._print_table_simple(res_json['data'])
+            table_data = res_json['data']
+            for t in table_data:
+                t.pop('avatar')
+            self._print_table_simple(table_data)
         else:
             print(f"Fail to get all agents of {user_name}, code: {res_json['code']}, message: {res_json['message']}")
 
