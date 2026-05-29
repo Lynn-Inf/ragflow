@@ -131,14 +131,14 @@ func (m *ModelProviderService) ListProvidersOfTenant(userID string) ([]map[strin
 
 	tenantID := tenants[0].TenantID
 
-	providerNames, err := m.modelProviderDAO.ListByID(tenantID)
+	providers, err := m.modelProviderDAO.ListByID(tenantID)
 	if err != nil {
 		return nil, common.CodeServerError, err
 	}
 
 	var result []map[string]interface{}
-	for _, providerName := range providerNames {
-		provider, err := dao.GetModelProviderManager().GetProviderByName(providerName)
+	for _, p := range providers {
+		provider, err := dao.GetModelProviderManager().GetProviderByName(p.ProviderName)
 		if err != nil {
 			return nil, common.CodeServerError, err
 		}
@@ -295,7 +295,7 @@ func (m *ModelProviderService) ListProviderInstances(providerName, userID string
 	}
 
 	// Check if provider exists
-	instances, err := m.modelInstanceDAO.GetAllInstancesByProviderID(provider.ID)
+	instances, err := m.modelInstanceDAO.GetAllInstancesByProviderIDs([]string{provider.ID})
 	if err != nil {
 		return nil, common.CodeServerError, err
 	}
@@ -306,16 +306,16 @@ func (m *ModelProviderService) ListProviderInstances(providerName, userID string
 		var extra map[string]string
 		err = json.Unmarshal([]byte(instance.Extra), &extra)
 		if err != nil {
-			return nil, common.CodeServerError, err
+			extra = make(map[string]string)
 		}
 
 		result = append(result, map[string]interface{}{
-			"id":           instance.ID,
-			"instanceName": instance.InstanceName,
-			"providerID":   instance.ProviderID,
-			"apiKey":       instance.APIKey,
-			"status":       instance.Status,
-			"extra":        instance.Extra,
+			"api_key":       instance.APIKey,
+			"id":            instance.ID,
+			"instance_name":  instance.InstanceName,
+			"provider_id":   instance.ProviderID,
+			"region":        extra["region"],
+			"status":        instance.Status,
 		})
 	}
 
@@ -351,15 +351,15 @@ func (m *ModelProviderService) ShowProviderInstance(providerName, instanceName, 
 	var extra map[string]string
 	err = json.Unmarshal([]byte(instance.Extra), &extra)
 	if err != nil {
-		return nil, common.CodeServerError, err
+		extra = make(map[string]string)
 	}
 
 	result := map[string]interface{}{
-		"id":           instance.ID,
-		"instanceName": instance.InstanceName,
-		"providerID":   instance.ProviderID,
-		"status":       instance.Status,
-		"region":       extra["region"],
+		"id":            instance.ID,
+		"instance_name":  instance.InstanceName,
+		"provider_id":   instance.ProviderID,
+		"status":        instance.Status,
+		"region":        extra["region"],
 	}
 
 	return result, common.CodeSuccess, nil
@@ -720,7 +720,7 @@ func (m *ModelProviderService) ListInstanceModels(providerName, instanceName, us
 	}
 
 	// Get all models for this instance
-	disabledModels, err := m.modelDAO.GetModelsByInstanceID(instance.ID)
+	disabledModels, err := m.modelDAO.GetModelsByInstanceIDs([]string{instance.ID})
 	if err != nil {
 		return nil, err
 	}
@@ -744,6 +744,8 @@ func (m *ModelProviderService) ListInstanceModels(providerName, instanceName, us
 	for _, model := range allModels {
 		// convert model["name"] to string
 		modelName := model["name"].(string)
+		model["model_type"] = model["model_types"]
+		delete(model, "model_types")
 		if modelNames[modelName] {
 			model["status"] = "inactive"
 		} else {
