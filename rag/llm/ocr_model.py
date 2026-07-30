@@ -18,9 +18,10 @@ import json
 import logging
 import os
 import time
+import uuid
 import zipfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 from deepdoc.parser.mineru_parser import MinerUContentType, MinerUParser
 from deepdoc.parser.mistral_parser import MistralParser
@@ -146,13 +147,19 @@ class MinerUNetOcrModel(Base):
         if callback:
             callback(0.05, "[MinerU.Net] Submitting task...")
 
-        task_id = self._submit_task(filepath, binary, headers, **kwargs)
+        task_id, temp_cleanup = self._submit_task(filepath, binary, headers, **kwargs)
+        try:
+            if callback:
+                callback(0.1, f"[MinerU.Net] Task {task_id} submitted, waiting for processing...")
 
-        if callback:
-            callback(0.1, f"[MinerU.Net] Task {task_id} submitted, waiting for processing...")
-
-        # Step 2: Poll until done
-        zip_url = self._poll_until_done(task_id, headers, callback)
+            # Step 2: Poll until done
+            zip_url = self._poll_until_done(task_id, headers, callback)
+        finally:
+            # Clean up temporary storage object (if any) after MinerU.Net
+            # has finished downloading it — the presigned URL is consumed
+            # once the server-side task starts processing.
+            if temp_cleanup:
+                temp_cleanup()
 
         if callback:
             callback(0.75, "[MinerU.Net] Downloading result...")
@@ -203,17 +210,67 @@ class MinerUNetOcrModel(Base):
 
         return sections, []
 
-    def _submit_task(self, filepath: str, binary, headers: dict, **kwargs) -> str:
-        if binary is not None:
-            if isinstance(binary, str) and (binary.startswith("http://") or binary.startswith("https://")):
-                return self._submit_by_url(binary, kwargs.get("lang", ""), headers)
-            return self._submit_by_upload(filepath, binary, headers, **kwargs)
+    def _submit_task(self, filepath: str, binary, headers: dict, **kwargs) -> Tuple[str, callable]:
+        """Resolve file content and submit to MinerU.Net.
 
+        Returns (task_id, cleanup_callable).  cleanup_callable is a no-arg
+        function that deletes the temporary storage object (or None).
+        """
+        lang = kwargs.get("lang", "")
+
+        # Case 1: binary is a URL string → submit directly
+        if binary is not None and isinstance(binary, str) and (binary.startswith("http://") or binary.startswith("https://")):
+            return self._submit_by_url(binary, lang, headers), None
+
+        # Case 2: filepath is a URL string → submit directly
         if isinstance(filepath, str) and (filepath.startswith("http://") or filepath.startswith("https://")):
-            return self._submit_by_url(filepath, kwargs.get("lang", ""), headers)
+            if binary is None:
+                return self._submit_by_url(filepath, lang, headers), None
 
-        content = Path(filepath).read_bytes()
-        return self._submit_by_upload(filepath, content, headers, **kwargs)
+        # Case 3: local file — extract bytes, stage in storage, submit by URL
+        content = self._read_local_content(filepath, binary)
+        return self._stage_and_submit(filepath, content, headers, lang)
+
+    @staticmethod
+    def _read_local_content(filepath: str, binary) -> bytes:
+        if isinstance(binary, bytes):
+            return binary
+        if hasattr(binary, "read"):
+            return binary.read()
+        if binary is not None:
+            raise TypeError(f"Unexpected binary type: {type(binary).__name__}; expected bytes, file-like, or None")
+        return Path(filepath).read_bytes()
+
+    def _stage_and_submit(self, filepath: str, content: bytes, headers: dict, lang: str) -> Tuple[str, callable]:
+        """Upload *content* to object storage, get a presigned URL, and submit to MinerU.Net.
+
+        Returns (task_id, cleanup_callable) — the caller MUST invoke the
+        cleanup after the server-side task has processed the presigned URL.
+        """
+        from common.settings import STORAGE_IMPL
+
+        if STORAGE_IMPL is None:
+            raise RuntimeError("MinerU.Net does not support direct file upload — a public document URL is required, but no object storage (STORAGE_IMPL) is configured.")
+
+        filename = Path(filepath).name or "document.pdf"
+        temp_key = f"mineru_temp/{uuid.uuid4().hex}/{filename}"
+        bucket = "mineru-temp"
+
+        STORAGE_IMPL.put(bucket, temp_key, content)
+
+        presigned_url = STORAGE_IMPL.get_presigned_url(bucket, temp_key, expires=3600)
+        if not presigned_url:
+            raise RuntimeError("Failed to generate presigned URL for the staged document")
+
+        task_id = self._submit_by_url(presigned_url, lang, headers)
+
+        def cleanup():
+            try:
+                STORAGE_IMPL.rm(bucket, temp_key)
+            except Exception:
+                logging.debug("[MinerU.Net] Failed to clean up temp storage key %s/%s", bucket, temp_key)
+
+        return task_id, cleanup
 
     def _submit_by_url(self, url: str, lang: str, headers: dict) -> str:
         req_body: dict = {"url": url, "model_version": self.model_name}
@@ -227,30 +284,6 @@ class MinerUNetOcrModel(Base):
             timeout=30,
         )
         self._check_api_response(r, "submit task")
-        return r.json()["data"]["task_id"]
-
-    def _submit_by_upload(self, filepath: str, binary, headers: dict, **kwargs) -> str:
-        if isinstance(binary, bytes):
-            file_obj = io.BytesIO(binary)
-        elif hasattr(binary, "read"):
-            file_obj = io.BytesIO(binary.read())
-        else:
-            raise TypeError(f"_submit_by_upload expects bytes or a file-like object, got {type(binary).__name__}")
-
-        filename = Path(filepath).name or "document.pdf"
-        files = {"file": (filename, file_obj, "application/octet-stream")}
-        data: dict = {"model_version": self.model_name}
-        if kwargs.get("lang"):
-            data["lang"] = kwargs["lang"]
-
-        r = requests.post(
-            f"{self.base_url}/api/v4/extract/task",
-            data=data,
-            files=files,
-            headers=headers,
-            timeout=30,
-        )
-        self._check_api_response(r, "upload file")
         return r.json()["data"]["task_id"]
 
     def _poll_until_done(self, task_id: str, headers: dict, callback=None) -> str:
