@@ -131,6 +131,24 @@ type WikiMapVersionStore interface {
 	PutWikiMapVersions(ctx context.Context, versions []WikiMapVersion) error
 }
 
+// WikiMapActiveState is the mutable pointer to the chunk/hash MAP versions and
+// page plan used by the latest successful document Wiki compile. Payload is
+// owned by the wiki variant so the storage layer remains schema-independent.
+type WikiMapActiveState struct {
+	Key        string
+	TenantID   string
+	DatasetID  string
+	DocumentID string
+	Payload    []byte
+}
+
+// WikiMapActiveStateStore persists the active MAP/plan snapshot separately
+// from immutable WikiMapVersion history.
+type WikiMapActiveStateStore interface {
+	GetWikiMapActiveState(ctx context.Context, tenantID, datasetID, key string) ([]byte, error)
+	PutWikiMapActiveState(ctx context.Context, state WikiMapActiveState) error
+}
+
 // RedisClient is injected only for the datasetnav variant (M8).
 type RedisClient interface {
 	// Minimal lock surface; full API added in M8.
@@ -140,11 +158,15 @@ type RedisClient interface {
 // interfaces so tests inject stubs; production wiring lives in
 // internal/ingestion/task (see PORT_PLAN.md §4 dependency injection seam).
 type Deps struct {
-	Chat            ChatInvoker
-	Embed           Embedder
-	Tokenizer       Tokenizer
-	HistoricalKNN   HistoricalKNN       // optional (wiki)
-	WikiPages       WikiPageStore       // optional (wiki)
+	Chat          ChatInvoker
+	Embed         Embedder
+	Tokenizer     Tokenizer
+	HistoricalKNN HistoricalKNN // optional (wiki)
+	WikiPages     WikiPageStore // optional (wiki)
+	// WikiMapVersions requires BOTH TenantID and DatasetID on every access:
+	// the DocStore-backed store keys its rows ragflow_<tenant_id>/<kb_id> and
+	// fails loudly on an empty scope. Runs missing either scope (canvas debug
+	// dry-runs) take the cache-less MAP path instead of calling the store.
 	WikiMapVersions WikiMapVersionStore // optional (wiki version cache)
 	Redis           RedisClient         // optional (datasetnav)
 	TenantID        string
