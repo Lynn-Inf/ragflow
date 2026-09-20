@@ -27,7 +27,6 @@ import (
 	"net/url"
 	"ragflow/internal/common"
 	"ragflow/internal/engine/clickhouse"
-	"ragflow/internal/utility"
 	"sort"
 	"strings"
 	"sync"
@@ -38,6 +37,19 @@ const (
 	redactedLogValue      = "[REDACTED]"
 	maxLoggedVectorFloats = 3
 )
+
+// APIStatusError is a provider HTTP failure with its status code preserved, so
+// callers can act on the status (failover cooldown, retry) instead of matching
+// the error text. The shared request helpers return it; the message is byte-for-
+// byte what plain fmt.Errorf produced before, so existing assertions still hold.
+type APIStatusError struct {
+	Status int
+	Body   string
+}
+
+func (e *APIStatusError) Error() string {
+	return fmt.Sprintf("API request failed with status %d: %s", e.Status, e.Body)
+}
 
 type BaseModel struct {
 	BaseURL          map[string]string
@@ -225,7 +237,7 @@ func (b *BaseModel) doRequest(ctx context.Context, url string, apiConfig *APICon
 		if err != nil {
 			return nil, fmt.Errorf("API request failed with status %d; failed to read error response: %w", resp.StatusCode, err)
 		}
-		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, &APIStatusError{Status: resp.StatusCode, Body: string(body)}
 	}
 
 	body, err := readModelResponseBody(resp.Body)
@@ -260,7 +272,7 @@ func (b *BaseModel) doGetRequest(ctx context.Context, url string, apiConfig *API
 		if err != nil {
 			return nil, fmt.Errorf("API request failed with status %d; failed to read error response: %w", resp.StatusCode, err)
 		}
-		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, &APIStatusError{Status: resp.StatusCode, Body: string(body)}
 	}
 
 	body, err := readModelResponseBody(resp.Body)
@@ -293,7 +305,7 @@ func (b *BaseModel) doStreamRequest(ctx context.Context, url string, apiConfig *
 		if err != nil {
 			return fmt.Errorf("API request failed with status %d; failed to read error response: %w", resp.StatusCode, err)
 		}
-		return fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+		return &APIStatusError{Status: resp.StatusCode, Body: string(body)}
 	}
 
 	return handler(resp.Body)
@@ -458,7 +470,7 @@ func ParseListModel(modelList ModelList) []ListModelResponse {
 //
 // allowPrivate selects the guard strictness:
 //   - false (cloud-hosted drivers): every request is validated with
-//     utility.AssertURLSafe — scheme + host must be present and every resolved
+//     common.AssertURLSafe — scheme + host must be present and every resolved
 //     IP must be globally routable (private/loopback/link-local/metadata are
 //     rejected). This is the default and closes the go/request-forgery sink.
 //   - true (local-inference drivers): requests are validated with
@@ -730,7 +742,7 @@ func logProviderCall(providerURL, payload string, statusCode int, responseBody s
 type schemeSafeTransport struct{ base http.RoundTripper }
 
 func (t *schemeSafeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if err := utility.AssertURLSchemeSafe(req.URL.String()); err != nil {
+	if err := common.AssertURLSchemeSafe(req.URL.String()); err != nil {
 		return nil, err
 	}
 	return t.base.RoundTrip(req)
@@ -744,7 +756,7 @@ func (t *schemeSafeTransport) RoundTrip(req *http.Request) (*http.Response, erro
 type strictSSRFTransport struct{ base http.RoundTripper }
 
 func (t *strictSSRFTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if _, _, err := utility.AssertURLSafe(req.URL.String()); err != nil {
+	if _, _, err := common.AssertURLSafe(req.URL.String()); err != nil {
 		return nil, err
 	}
 	return t.base.RoundTrip(req)
